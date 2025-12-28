@@ -74,26 +74,77 @@ fn which() -> Gssapi {
     }
 }
 
+fn try_vendored() -> Option<bindgen::Builder> {
+    // Check if we're using vendored krb5 via krb5-src
+    // Note: Cargo converts "krb5-src" links to "KRB5_SRC" (hyphen becomes underscore)
+    eprintln!("DEBUG: Checking for DEP_KRB5_SRC_ROOT...");
+    for (key, value) in env::vars() {
+        if key.contains("KRB5") || key.starts_with("DEP_") {
+            eprintln!("DEBUG: Found env var: {} = {}", key, value);
+        }
+    }
+    // Try both with hyphen (original) and underscore (what Cargo actually uses)
+    let krb5_root = env::var("DEP_KRB5_SRC_ROOT")
+        .or_else(|_| env::var("DEP_KRB5SRC_ROOT"))  // All underscores
+        .ok();
+
+    if let Some(krb5_root) = krb5_root {
+        eprintln!("Using vendored krb5 from: {}", krb5_root);
+
+        // Link against the vendored static libraries
+        println!("cargo:rustc-link-search=native={}/lib", krb5_root);
+        println!("cargo:rustc-link-lib=static=gssapi_krb5");
+        println!("cargo:rustc-link-lib=static=krb5");
+        println!("cargo:rustc-link-lib=static=k5crypto");
+        println!("cargo:rustc-link-lib=static=com_err");
+        println!("cargo:rustc-link-lib=static=krb5support");
+
+        // Link system libraries required by krb5
+        let target = env::var("TARGET").expect("TARGET not set");
+        if target.contains("darwin") {
+            // macOS needs resolv for DNS functions
+            println!("cargo:rustc-link-lib=resolv");
+        } else if target.contains("linux") {
+            // Linux also needs resolv
+            println!("cargo:rustc-link-lib=resolv");
+        }
+
+        // Point bindgen to vendored headers
+        let builder = bindgen::Builder::default()
+            .clang_arg(format!("-I{}/include", krb5_root));
+
+        Some(builder)
+    } else {
+        None
+    }
+}
+
 fn main() {
     let cross_compile = env::var("HOST").unwrap() != env::var("TARGET").unwrap();
 
-    let (imp, builder) = match (cross_compile, try_pkgconfig()) {
-        (false, Ok((imp, builder))) => (imp, builder),
-        _ => {
-            let imp = which();
-            let builder = bindgen::Builder::default();
-            let nix_cflags = env::var("NIX_CFLAGS_COMPILE");
-            let builder = match imp {
-                Gssapi::Mit | Gssapi::Heimdal => match nix_cflags {
-                    Err(_) => builder,
-                    Ok(flags) => builder.clang_args(flags.split(" ")),
-                },
-                Gssapi::Apple =>
-                builder.clang_arg("-F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks")
-            };
-            (imp, builder)
+    // Try vendored first if enabled
+    let (imp, builder) = if let Some(builder) = try_vendored() {
+        (Gssapi::Mit, builder)
+    } else {
+        match (cross_compile, try_pkgconfig()) {
+            (false, Ok((imp, builder))) => (imp, builder),
+            _ => {
+                let imp = which();
+                let builder = bindgen::Builder::default();
+                let nix_cflags = env::var("NIX_CFLAGS_COMPILE");
+                let builder = match imp {
+                    Gssapi::Mit | Gssapi::Heimdal => match nix_cflags {
+                        Err(_) => builder,
+                        Ok(flags) => builder.clang_args(flags.split(" ")),
+                    },
+                    Gssapi::Apple =>
+                    builder.clang_arg("-F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks")
+                };
+                (imp, builder)
+            }
         }
     };
+
     let bindings = builder
         .allowlist_type("(OM_.+|gss_.+)")
         .allowlist_var("_?GSS_.+|gss_.+")

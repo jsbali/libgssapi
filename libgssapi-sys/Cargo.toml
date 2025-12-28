@@ -13,6 +13,12 @@ keywords = ["gssapi", "sspi", "kerberos", "krb5", "authentication"]
 categories = ["api-bindings", "authentication", "cryptography", "os::unix-apis"]
 links = "gssapi_krb5"
 
+[features]
+vendored = ["krb5-src"]
+
+[dependencies]
+krb5-src = { version = "0.3", optional = true }
+
 [build-dependencies]
 bindgen = "0.71"
 pkg-config = "0.3"

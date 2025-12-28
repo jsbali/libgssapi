@@ -18,6 +18,7 @@ iov = []
 s4u = []
 localname = []
 store = []
+vendored = ["libgssapi-sys/vendored"]
 
 [dependencies]
 bytes = "1"
