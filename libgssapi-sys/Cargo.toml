@@ -17,7 +17,7 @@ links = "gssapi_krb5"
 vendored = ["krb5-src"]
 
 [dependencies]
-krb5-src = { version = "0.3", optional = true }
+krb5-src = { version = "0.3.4", optional = true }
 
 [build-dependencies]
 bindgen = "0.71"
