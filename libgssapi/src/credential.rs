@@ -10,18 +10,18 @@ use crate::{
     util::BufSet,
 };
 use libgssapi_sys::{
-    gss_OID_set, gss_acquire_cred, gss_acquire_cred_with_password, gss_cred_id_struct,
-    gss_cred_id_t, gss_cred_usage_t, gss_inquire_cred, gss_name_struct, gss_name_t,
-    gss_release_cred, OM_uint32, GSS_C_ACCEPT, GSS_C_BOTH, GSS_C_INITIATE,
-    GSS_S_COMPLETE, _GSS_C_INDEFINITE,
+    gss_OID_set, gss_acquire_cred, gss_acquire_cred_from, gss_acquire_cred_with_password,
+    gss_cred_id_struct, gss_cred_id_t, gss_cred_usage_t, gss_inquire_cred, gss_key_value_element_desc,
+    gss_key_value_set_desc, gss_name_struct, gss_name_t, gss_release_cred, OM_uint32,
+    GSS_C_ACCEPT, GSS_C_BOTH, GSS_C_INITIATE, GSS_S_COMPLETE, _GSS_C_INDEFINITE,
 };
+use std::ffi::CString;
 #[cfg(feature = "s4u")]
 use libgssapi_sys::{
-    gss_acquire_cred_impersonate_name, gss_inquire_cred_by_oid,
-    gss_key_value_element_desc, gss_key_value_set_desc, gss_store_cred_into,
+    gss_acquire_cred_impersonate_name, gss_inquire_cred_by_oid, gss_store_cred_into,
 };
 #[cfg(feature = "s4u")]
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::{fmt, ptr, sync::Arc, time::Duration};
 
 #[cfg(feature = "store")]
@@ -199,6 +199,74 @@ impl Cred {
                     Some(desired_mechs) => desired_mechs.to_c(),
                 },
                 usage as gss_cred_usage_t,
+                &mut cred as *mut gss_cred_id_t,
+                ptr::null_mut::<gss_OID_set>(),
+                ptr::null_mut::<OM_uint32>(),
+            )
+        };
+        if major == GSS_S_COMPLETE {
+            Ok(Cred::from(cred))
+        } else {
+            Err(Error {
+                major: MajorFlags::from_bits_retain(major),
+                minor,
+            })
+        }
+    }
+
+    /// Acquire a credential using an explicit, in-process credential store (e.g. a specific
+    /// keytab path) via the MIT krb5 `gss_acquire_cred_from` extension, instead of falling back
+    /// to the `KRB5_KTNAME` environment variable / default keytab location that plain `acquire`
+    /// uses. `cred_store` is a list of key/value hints understood by the underlying mechanism,
+    /// e.g. `&[("keytab", "/path/to/file.keytab")]`.
+    pub fn acquire_from(
+        name: Option<&Name>,
+        time_req: Option<Duration>,
+        usage: CredUsage,
+        desired_mechs: Option<&OidSet>,
+        cred_store: &[(&str, &str)],
+    ) -> Result<Cred, Error> {
+        let time_req = time_req
+            .map(|d| d.as_secs() as u32)
+            .unwrap_or(_GSS_C_INDEFINITE);
+        let mut minor = GSS_S_COMPLETE;
+        let usage = usage.to_c();
+        let mut cred = ptr::null_mut::<gss_cred_id_struct>();
+
+        let bad_name_err = || Error {
+            major: MajorFlags::GSS_S_CALL_INACCESSIBLE_READ | MajorFlags::GSS_S_BAD_NAME,
+            minor: 0,
+        };
+        let c_strings = cred_store
+            .iter()
+            .map(|(k, v)| Ok((CString::new(*k).map_err(|_| bad_name_err())?, CString::new(*v).map_err(|_| bad_name_err())?)))
+            .collect::<Result<Vec<(CString, CString)>, Error>>()?;
+        let mut elements: Vec<gss_key_value_element_desc> = c_strings
+            .iter()
+            .map(|(k, v)| gss_key_value_element_desc {
+                key: k.as_ptr(),
+                value: v.as_ptr(),
+            })
+            .collect();
+        let store = gss_key_value_set_desc {
+            count: elements.len() as u32,
+            elements: elements.as_mut_ptr(),
+        };
+
+        let major = unsafe {
+            gss_acquire_cred_from(
+                &mut minor as *mut OM_uint32,
+                match name {
+                    None => ptr::null_mut::<gss_name_struct>(),
+                    Some(n) => n.to_c(),
+                },
+                time_req,
+                match desired_mechs {
+                    None => NO_OID_SET,
+                    Some(desired_mechs) => desired_mechs.to_c(),
+                },
+                usage as gss_cred_usage_t,
+                &store,
                 &mut cred as *mut gss_cred_id_t,
                 ptr::null_mut::<gss_OID_set>(),
                 ptr::null_mut::<OM_uint32>(),
